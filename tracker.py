@@ -13,6 +13,7 @@ class Track:
     object_id: int
     centroid: Tuple[int, int]
     class_name: str
+    box: Tuple[int, int, int, int]
     missing_frames: int = 0
 
 
@@ -23,9 +24,15 @@ class CentroidTracker:
     demonstrating object tracking logic for final-year presentations.
     """
 
-    def __init__(self, max_distance: int = 120, max_missing: int = 18):
+    def __init__(
+        self,
+        max_distance: int = 180,
+        max_missing: int = 60,
+        minimum_iou: float = 0.05,
+    ):
         self.max_distance = max_distance
         self.max_missing = max_missing
+        self.minimum_iou = minimum_iou
         self.next_object_id = 1
         self.tracks: Dict[int, Track] = {}
 
@@ -47,45 +54,57 @@ class CentroidTracker:
 
         if self.tracks:
             track_ids = list(self.tracks.keys())
-            distance_matrix = np.zeros((len(track_ids), len(centroids)), dtype=float)
+            cost_matrix = np.full((len(track_ids), len(centroids)), np.inf, dtype=float)
 
             for row, track_id in enumerate(track_ids):
+                track = self.tracks[track_id]
                 for col, centroid in enumerate(centroids):
-                    if self.tracks[track_id].class_name != detections[col]["class_name"]:
-                        distance_matrix[row, col] = np.inf
-                    else:
-                        distance_matrix[row, col] = self._distance(self.tracks[track_id].centroid, centroid)
+                    if track.class_name != detections[col]["class_name"]:
+                        continue
 
-            while distance_matrix.size:
-                row, col = np.unravel_index(np.argmin(distance_matrix), distance_matrix.shape)
-                distance = distance_matrix[row, col]
+                    distance = self._distance(track.centroid, centroid)
+                    overlap = self._iou(track.box, detections[col]["box"])
+                    recovery_distance = self.max_distance * (
+                        1.0 + min(track.missing_frames, 6) * 0.12
+                    )
+                    if distance > recovery_distance and overlap < self.minimum_iou:
+                        continue
+
+                    # Lower is better. Overlap helps keep the same ID when a
+                    # detection box changes size around a mostly stationary object.
+                    cost_matrix[row, col] = (
+                        distance / max(recovery_distance, 1.0)
+                        + (1.0 - overlap) * 0.65
+                    )
+
+            while cost_matrix.size and np.isfinite(cost_matrix).any():
+                row, col = np.unravel_index(np.argmin(cost_matrix), cost_matrix.shape)
                 track_id = track_ids[row]
 
-                if distance > self.max_distance:
-                    break
                 if row in assigned_tracks or col in assigned_detections:
-                    distance_matrix[row, col] = np.inf
-                    if np.isinf(distance_matrix).all():
-                        break
+                    cost_matrix[row, col] = np.inf
                     continue
 
                 self.tracks[track_id].centroid = centroids[col]
                 self.tracks[track_id].class_name = detections[col]["class_name"]
+                self.tracks[track_id].box = detections[col]["box"]
                 self.tracks[track_id].missing_frames = 0
                 detections[col]["object_id"] = track_id
                 assigned_tracks.add(row)
                 assigned_detections.add(col)
-                distance_matrix[row, :] = np.inf
-                distance_matrix[:, col] = np.inf
-
-                if np.isinf(distance_matrix).all():
-                    break
+                cost_matrix[row, :] = np.inf
+                cost_matrix[:, col] = np.inf
 
         for index, detection in enumerate(detections):
             if index not in assigned_detections:
                 object_id = self.next_object_id
                 self.next_object_id += 1
-                self.tracks[object_id] = Track(object_id, centroids[index], detection["class_name"])
+                self.tracks[object_id] = Track(
+                    object_id,
+                    centroids[index],
+                    detection["class_name"],
+                    detection["box"],
+                )
                 detection["object_id"] = object_id
 
         for track_id, track in list(self.tracks.items()):
@@ -108,3 +127,19 @@ class CentroidTracker:
     @staticmethod
     def _distance(point_a: Tuple[int, int], point_b: Tuple[int, int]) -> float:
         return float(np.linalg.norm(np.array(point_a) - np.array(point_b)))
+
+    @staticmethod
+    def _iou(
+        box_a: Tuple[int, int, int, int],
+        box_b: Tuple[int, int, int, int],
+    ) -> float:
+        """Return intersection-over-union for two boxes."""
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        intersection_width = max(0, min(ax2, bx2) - max(ax1, bx1))
+        intersection_height = max(0, min(ay2, by2) - max(ay1, by1))
+        intersection = intersection_width * intersection_height
+        area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+        area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+        union = area_a + area_b - intersection
+        return intersection / union if union > 0 else 0.0

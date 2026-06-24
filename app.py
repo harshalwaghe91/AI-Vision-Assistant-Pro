@@ -75,7 +75,7 @@ ensure_directories()
 init_db()
 LOGO_PATH = "assets/ai_vision_logo.png"
 YOLO_INFERENCE_LOCK = threading.Lock()
-APP_BUILD = "Fixed video frame + persistent stop v6"
+APP_BUILD = "Stable person tracking v7"
 LIVE_WEBRTC_KEY = "ai-vision-browser-camera"
 
 
@@ -587,6 +587,7 @@ class BrowserYOLOProcessor(VideoProcessorBase):
         self.session_id = session_id
         self.frame_number = 0
         self.reported_object_ids = set()
+        self.object_sightings = {}
         self.started_at = time.time()
         self.state_lock = threading.Lock()
         self.latest_metrics = {
@@ -617,10 +618,15 @@ class BrowserYOLOProcessor(VideoProcessorBase):
         new_detections = []
         for detection in detections:
             object_id = detection.get("object_id")
-            if object_id is None or object_id not in self.reported_object_ids:
+            if object_id is None:
+                continue
+            self.object_sightings[object_id] = self.object_sightings.get(object_id, 0) + 1
+            if (
+                object_id not in self.reported_object_ids
+                and self.object_sightings[object_id] >= 5
+            ):
                 new_detections.append(detection)
-                if object_id is not None:
-                    self.reported_object_ids.add(object_id)
+                self.reported_object_ids.add(object_id)
 
         if new_detections:
             insert_detections(self.session_id, self.frame_number, new_detections)

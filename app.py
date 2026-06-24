@@ -39,6 +39,7 @@ from database import (
     fetch_crowd_logs_by_session,
     fetch_detections_by_session,
     fetch_detection_history,
+    fetch_latest_open_session_id,
     fetch_sessions,
     init_db,
     insert_crowd_log,
@@ -74,7 +75,7 @@ ensure_directories()
 init_db()
 LOGO_PATH = "assets/ai_vision_logo.png"
 YOLO_INFERENCE_LOCK = threading.Lock()
-APP_BUILD = "WebRTC reports + IST timestamps v3"
+APP_BUILD = "Stable stop + complete IST v4"
 
 
 def apply_css() -> None:
@@ -383,16 +384,16 @@ def main() -> None:
         st.sidebar.markdown("---")
         if st.session_state.browser_camera_enabled:
             st.sidebar.success("Live camera is active")
-            if st.sidebar.button(
-                "Stop Live Camera",
-                type="primary",
-                use_container_width=True,
-                key="sidebar_stop_live_camera",
-            ):
-                request_live_camera_stop()
-                st.rerun()
         else:
             st.sidebar.info("Live camera is stopped")
+        if st.sidebar.button(
+            "Stop Live Camera",
+            type="primary",
+            use_container_width=True,
+            key="sidebar_stop_live_camera",
+        ):
+            request_live_camera_stop()
+            st.rerun()
 
     st.sidebar.markdown("---")
     st.sidebar.caption("YOLO + OpenCV + Streamlit + SQLite")
@@ -684,7 +685,10 @@ class BrowserYOLOProcessor(VideoProcessorBase):
 
 def request_live_camera_stop() -> None:
     """Stop WebRTC and queue its current session for report generation."""
-    session_id = st.session_state.get("browser_live_session_id")
+    session_id = (
+        st.session_state.get("browser_live_session_id")
+        or fetch_latest_open_session_id("Browser Live Detection")
+    )
     st.session_state.browser_camera_enabled = False
     if session_id:
         st.session_state.pending_live_report_session_id = session_id
@@ -712,7 +716,6 @@ def live_detection_page() -> None:
     if stop_col.button(
         "Stop Camera",
         use_container_width=True,
-        disabled=not st.session_state.browser_camera_enabled,
     ):
         request_live_camera_stop()
         st.rerun()

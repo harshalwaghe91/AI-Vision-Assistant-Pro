@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
-from utils import DATABASE_DIR, current_timestamp
+from utils import DATABASE_DIR, current_timestamp, dataframe_timestamps_to_ist
 
 
 DB_PATH = DATABASE_DIR / "vision_assistant.db"
@@ -159,12 +159,14 @@ def fetch_dataframe(table_name: str, limit: int = 5000) -> pd.DataFrame:
     if table_name not in allowed:
         raise ValueError("Unknown table requested.")
     with get_connection() as conn:
-        return pd.read_sql_query(f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT ?", conn, params=(limit,))
+        df = pd.read_sql_query(f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT ?", conn, params=(limit,))
+    return dataframe_timestamps_to_ist(df)
 
 
 def fetch_sessions() -> pd.DataFrame:
     with get_connection() as conn:
-        return pd.read_sql_query("SELECT * FROM sessions ORDER BY started_at DESC", conn)
+        df = pd.read_sql_query("SELECT * FROM sessions ORDER BY started_at DESC", conn)
+    return dataframe_timestamps_to_ist(df)
 
 
 def fetch_detection_history(limit: int = 1000) -> pd.DataFrame:
@@ -177,20 +179,38 @@ def fetch_crowd_history(limit: int = 1000) -> pd.DataFrame:
 
 def fetch_detections_by_session(session_id: str) -> pd.DataFrame:
     with get_connection() as conn:
-        return pd.read_sql_query(
+        df = pd.read_sql_query(
             "SELECT * FROM detections WHERE session_id = ? ORDER BY frame_number, id",
             conn,
             params=(session_id,),
         )
+    return dataframe_timestamps_to_ist(df)
 
 
 def fetch_crowd_logs_by_session(session_id: str) -> pd.DataFrame:
     with get_connection() as conn:
-        return pd.read_sql_query(
+        df = pd.read_sql_query(
             "SELECT * FROM crowd_logs WHERE session_id = ? ORDER BY frame_number, id",
             conn,
             params=(session_id,),
         )
+    return dataframe_timestamps_to_ist(df)
+
+
+def fetch_latest_open_session_id(session_type: str) -> Optional[str]:
+    """Return the newest unfinished session for a workflow."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT session_id
+            FROM sessions
+            WHERE session_type = ? AND ended_at IS NULL
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (session_type,),
+        ).fetchone()
+    return str(row[0]) if row else None
 
 
 def total_sessions() -> int:

@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import cv2
 import numpy as np
+import pandas as pd
 from PIL import Image
 
 
@@ -43,6 +44,34 @@ def create_session_id(prefix: str = "session") -> str:
 def current_timestamp() -> str:
     """Return timestamp text suitable for database rows and reports."""
     return local_now().strftime("%Y-%m-%d %H:%M:%S IST")
+
+
+def timestamp_to_ist(value: object) -> str:
+    """Convert stored UTC/legacy timestamps to readable India time."""
+    if value is None or pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "nan", "nat"}:
+        return ""
+    if text.endswith(" IST"):
+        return text
+
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.tz_localize("UTC")
+    return parsed.tz_convert(APP_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S IST")
+
+
+def dataframe_timestamps_to_ist(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with all known timestamp columns normalized to IST."""
+    converted = df.copy()
+    for column in ("timestamp", "started_at", "ended_at"):
+        if column in converted.columns:
+            converted[column] = converted[column].map(timestamp_to_ist)
+    return converted
 
 
 def image_to_cv2(image: Image.Image) -> np.ndarray:

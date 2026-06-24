@@ -74,6 +74,7 @@ ensure_directories()
 init_db()
 LOGO_PATH = "assets/ai_vision_logo.png"
 YOLO_INFERENCE_LOCK = threading.Lock()
+APP_BUILD = "WebRTC camera controls v2"
 
 
 def apply_css() -> None:
@@ -358,6 +359,9 @@ def apply_css() -> None:
 
 def main() -> None:
     apply_css()
+    if "browser_camera_enabled" not in st.session_state:
+        st.session_state.browser_camera_enabled = False
+
     if Path(LOGO_PATH).exists():
         st.sidebar.image(LOGO_PATH, use_column_width=True)
     st.sidebar.title("AI Vision Assistant Pro")
@@ -375,8 +379,24 @@ def main() -> None:
         ],
     )
 
+    if page == "Live Detection":
+        st.sidebar.markdown("---")
+        if st.session_state.browser_camera_enabled:
+            st.sidebar.success("Live camera is active")
+            if st.sidebar.button(
+                "Stop Live Camera",
+                type="primary",
+                use_container_width=True,
+                key="sidebar_stop_live_camera",
+            ):
+                st.session_state.browser_camera_enabled = False
+                st.rerun()
+        else:
+            st.sidebar.info("Live camera is stopped")
+
     st.sidebar.markdown("---")
     st.sidebar.caption("YOLO + OpenCV + Streamlit + SQLite")
+    st.sidebar.caption(APP_BUILD)
 
     if page == "Home":
         home_page()
@@ -669,9 +689,6 @@ def live_detection_page() -> None:
     model_name, confidence = model_controls("live")
     threshold = st.slider("Crowd Alert Threshold", 1, 50, 15)
 
-    if "browser_camera_enabled" not in st.session_state:
-        st.session_state.browser_camera_enabled = False
-
     start_col, stop_col = st.columns(2)
     if start_col.button(
         "Start Camera",
@@ -728,7 +745,17 @@ def live_detection_page() -> None:
         metric_cols[4].metric("Density", metrics["density"])
         metric_cols[5].metric("Status", metrics["alert"])
 
-    st.caption("Use Stop Camera above to end detection. Results are saved in Detection History.")
+    if st.session_state.browser_camera_enabled:
+        st.warning("To stop detection, use Stop Camera above or Stop Live Camera in the sidebar.")
+        if st.button(
+            "Stop Detection Now",
+            use_container_width=True,
+            key="bottom_stop_live_camera",
+        ):
+            st.session_state.browser_camera_enabled = False
+            st.rerun()
+    else:
+        st.caption("Results are saved in Detection History.")
 
 
 def filter_new_live_detections(detections: list) -> list:

@@ -74,7 +74,7 @@ ensure_directories()
 init_db()
 LOGO_PATH = "assets/ai_vision_logo.png"
 YOLO_INFERENCE_LOCK = threading.Lock()
-APP_BUILD = "WebRTC camera controls v2"
+APP_BUILD = "WebRTC reports + IST timestamps v3"
 
 
 def apply_css() -> None:
@@ -389,7 +389,7 @@ def main() -> None:
                 use_container_width=True,
                 key="sidebar_stop_live_camera",
             ):
-                st.session_state.browser_camera_enabled = False
+                request_live_camera_stop()
                 st.rerun()
         else:
             st.sidebar.info("Live camera is stopped")
@@ -594,12 +594,12 @@ def model_controls(prefix: str):
 class BrowserYOLOProcessor(VideoProcessorBase):
     """Process a device camera stream received through the browser."""
 
-    def __init__(self, model_name: str, confidence: float, crowd_threshold: int):
+    def __init__(self, model_name: str, confidence: float, crowd_threshold: int, session_id: str):
         self.model_name = model_name
         self.confidence = confidence
         self.crowd_threshold = crowd_threshold
         self.tracker = CentroidTracker()
-        self.session_id = create_session_id("browser_live")
+        self.session_id = session_id
         self.frame_number = 0
         self.reported_object_ids = set()
         self.started_at = time.time()
@@ -612,7 +612,6 @@ class BrowserYOLOProcessor(VideoProcessorBase):
             "density": "No Crowd",
             "alert": "Normal",
         }
-        create_session(self.session_id, "Browser Live Detection")
 
     def recv(self, frame: VideoFrame) -> VideoFrame:
         image = frame.to_ndarray(format="bgr24")
@@ -680,7 +679,15 @@ class BrowserYOLOProcessor(VideoProcessorBase):
             return self.latest_metrics.copy()
 
     def on_ended(self) -> None:
-        end_session(self.session_id)
+        pass
+
+
+def request_live_camera_stop() -> None:
+    """Stop WebRTC and queue its current session for report generation."""
+    session_id = st.session_state.get("browser_live_session_id")
+    st.session_state.browser_camera_enabled = False
+    if session_id:
+        st.session_state.pending_live_report_session_id = session_id
 
 
 def live_detection_page() -> None:
@@ -696,6 +703,10 @@ def live_detection_page() -> None:
         use_container_width=True,
         disabled=st.session_state.browser_camera_enabled,
     ):
+        session_id = create_session_id("browser_live")
+        st.session_state.browser_live_session_id = session_id
+        st.session_state.last_live_report_paths = {}
+        create_session(session_id, "Browser Live Detection")
         st.session_state.browser_camera_enabled = True
         st.rerun()
     if stop_col.button(
@@ -703,7 +714,7 @@ def live_detection_page() -> None:
         use_container_width=True,
         disabled=not st.session_state.browser_camera_enabled,
     ):
-        st.session_state.browser_camera_enabled = False
+        request_live_camera_stop()
         st.rerun()
 
     if st.session_state.browser_camera_enabled:
@@ -711,7 +722,8 @@ def live_detection_page() -> None:
     else:
         st.info("Press Start Camera, then choose Allow when the browser requests camera permission.")
 
-    processor_factory = lambda: BrowserYOLOProcessor(model_name, confidence, threshold)
+    session_id = st.session_state.get("browser_live_session_id")
+    processor_factory = lambda: BrowserYOLOProcessor(model_name, confidence, threshold, session_id)
     context = webrtc_streamer(
         key="ai-vision-browser-camera",
         mode=WebRtcMode.SENDRECV,
@@ -735,6 +747,14 @@ def live_detection_page() -> None:
         video_html_attrs={"autoPlay": True, "controls": False, "muted": True},
     )
 
+    pending_session_id = st.session_state.pop("pending_live_report_session_id", None)
+    if pending_session_id and not st.session_state.browser_camera_enabled:
+        time.sleep(0.3)
+        with st.spinner("Finalizing live detection reports..."):
+            finalize_live_session(pending_session_id)
+        st.session_state.browser_live_session_id = None
+        st.success("Live detection stopped. CSV, Excel, and PDF reports are ready below.")
+
     if context.video_processor:
         metrics = context.video_processor.get_metrics()
         metric_cols = st.columns(6)
@@ -752,10 +772,12 @@ def live_detection_page() -> None:
             use_container_width=True,
             key="bottom_stop_live_camera",
         ):
-            st.session_state.browser_camera_enabled = False
+            request_live_camera_stop()
             st.rerun()
     else:
         st.caption("Results are saved in Detection History.")
+
+    show_last_live_report_downloads()
 
 
 def filter_new_live_detections(detections: list) -> list:
@@ -1064,6 +1086,7 @@ def reports_page() -> None:
 
 def detection_history_page() -> None:
     st.title("Detection History")
+    st.caption("All new timestamps are displayed in India Standard Time (IST, UTC+05:30).")
     history_view = st.radio(
         "History View",
         ["Detections", "Crowd Logs", "Sessions"],

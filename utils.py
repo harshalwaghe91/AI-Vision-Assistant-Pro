@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict
+from zoneinfo import ZoneInfo
 
 import cv2
 import numpy as np
@@ -19,6 +20,12 @@ OUTPUTS_DIR = BASE_DIR / "outputs"
 REPORTS_DIR = BASE_DIR / "reports"
 DATABASE_DIR = BASE_DIR / "database"
 SAMPLE_DATA_DIR = BASE_DIR / "sample_data"
+APP_TIMEZONE = ZoneInfo("Asia/Kolkata")
+
+
+def local_now() -> datetime:
+    """Return the current application time in Asia/Kolkata."""
+    return datetime.now(APP_TIMEZONE)
 
 
 def ensure_directories() -> None:
@@ -29,13 +36,13 @@ def ensure_directories() -> None:
 
 def create_session_id(prefix: str = "session") -> str:
     """Return a readable unique session id."""
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = local_now().strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{stamp}_{uuid.uuid4().hex[:6]}"
 
 
 def current_timestamp() -> str:
     """Return timestamp text suitable for database rows and reports."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return local_now().strftime("%Y-%m-%d %H:%M:%S IST")
 
 
 def image_to_cv2(image: Image.Image) -> np.ndarray:
@@ -54,7 +61,7 @@ def save_uploaded_file(uploaded_file, destination_dir: Path) -> Path:
     """Save a Streamlit uploaded file and return its local path."""
     ensure_directories()
     safe_name = uploaded_file.name.replace(" ", "_")
-    path = destination_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
+    path = destination_dir / f"{local_now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
     with open(path, "wb") as file:
         file.write(uploaded_file.getbuffer())
     return path

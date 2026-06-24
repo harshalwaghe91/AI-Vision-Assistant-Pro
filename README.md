@@ -4,13 +4,13 @@ Real-Time Object Detection, Crowd Analytics & Smart Reporting Dashboard
 
 ## Overview
 
-AI Vision Assistant Pro is a professional final-year computer vision web app built with YOLO, OpenCV, Streamlit, SQLite, Pandas, Plotly, and ReportLab. It supports webcam detection, image detection, video detection, crowd density analysis, object tracking with unique IDs, detection history, and downloadable CSV, Excel, and PDF reports.
+AI Vision Assistant Pro is a professional final-year computer vision web app built with YOLO, OpenCV, Streamlit, WebRTC, SQLite, Pandas, Plotly, and ReportLab. It supports browser-camera detection, image detection, video detection, crowd density analysis, object tracking with unique IDs, detection history, and downloadable CSV, Excel, and PDF reports.
 
 The project is designed for final-year demonstrations, GitHub portfolios, and practical computer vision learning.
 
 ## Features
 
-- Real-time webcam object detection using YOLO
+- Real-time browser-camera object detection on phones, tablets, and computers
 - Image upload detection with original and annotated output views
 - Video upload detection with frame-by-frame processing
 - Crowd detection by counting only the `person` class
@@ -161,7 +161,7 @@ app.py
 5. Use Python 3.11 if the platform asks for a runtime.
 6. Deploy.
 
-Note: Webcam access on cloud platforms can depend on browser and hosting permissions. Image and video upload detection will work normally when dependencies install successfully.
+The Live Detection page uses WebRTC and HTTPS, so each device can securely provide its own camera stream. Users must allow camera access in their browser. A STUN server is configured for remote connections; restrictive corporate or institutional networks may additionally require a TURN server.
 
 ## Docker Run
 

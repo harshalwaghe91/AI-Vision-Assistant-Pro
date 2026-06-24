@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -13,6 +14,8 @@ import cv2
 import pandas as pd
 import plotly.io as pio
 import streamlit as st
+from av import VideoFrame
+from streamlit_webrtc import VideoProcessorBase, WebRtcMode, webrtc_streamer
 
 from analytics import (
     aggregate_object_counts_from_history,
@@ -70,6 +73,7 @@ pio.templates.default = "plotly_dark"
 ensure_directories()
 init_db()
 LOGO_PATH = "assets/ai_vision_logo.png"
+YOLO_INFERENCE_LOCK = threading.Lock()
 
 
 def apply_css() -> None:
@@ -567,72 +571,59 @@ def model_controls(prefix: str):
     return MODEL_OPTIONS[model_label], confidence
 
 
-def live_detection_page() -> None:
-    st.title("Live Detection")
-    st.caption("Use a local webcam. On Streamlit Cloud, browser-hosted webcam access can be limited by platform permissions.")
-    model_name, confidence = model_controls("live")
-    threshold = st.slider("Crowd Alert Threshold", 1, 50, 15)
-    duration_seconds = st.slider("Live Detection Duration", 30, 1800, 300, 30, help="Increase this for longer live detection sessions.")
-    unlimited_mode = st.checkbox("Unlimited Mode", value=False, help="Runs until the browser/app process is stopped. Use carefully during demos.")
+class BrowserYOLOProcessor(VideoProcessorBase):
+    """Process a device camera stream received through the browser."""
 
-    if "live_running" not in st.session_state:
-        st.session_state.live_running = False
-    if "live_tracker" not in st.session_state:
-        st.session_state.live_tracker = CentroidTracker()
-    if "live_session_id" not in st.session_state:
-        st.session_state.live_session_id = create_session_id("live")
-    if "live_reported_object_ids" not in st.session_state:
-        st.session_state.live_reported_object_ids = set()
-    if "last_live_report_paths" not in st.session_state:
-        st.session_state.last_live_report_paths = {}
+    def __init__(self, model_name: str, confidence: float, crowd_threshold: int):
+        self.model_name = model_name
+        self.confidence = confidence
+        self.crowd_threshold = crowd_threshold
+        self.tracker = CentroidTracker()
+        self.session_id = create_session_id("browser_live")
+        self.frame_number = 0
+        self.reported_object_ids = set()
+        self.started_at = time.time()
+        self.state_lock = threading.Lock()
+        self.latest_metrics = {
+            "fps": 0.0,
+            "objects": 0,
+            "classes": 0,
+            "persons": 0,
+            "density": "No Crowd",
+            "alert": "Normal",
+        }
+        create_session(self.session_id, "Browser Live Detection")
 
-    start_col, stop_col = st.columns(2)
-    if start_col.button("Start Webcam Detection", type="primary"):
-        st.session_state.live_running = True
-        st.session_state.live_session_id = create_session_id("live")
-        st.session_state.live_tracker.reset()
-        st.session_state.live_reported_object_ids = set()
-        st.session_state.last_live_report_paths = {}
-        create_session(st.session_state.live_session_id, "Live Detection")
-    if stop_col.button("Stop Webcam Detection"):
-        st.session_state.live_running = False
-        finalize_live_session(st.session_state.live_session_id)
+    def recv(self, frame: VideoFrame) -> VideoFrame:
+        image = frame.to_ndarray(format="bgr24")
+        self.frame_number += 1
 
-    frame_placeholder = st.empty()
-    metric_cols = st.columns(6)
-    status_placeholder = st.empty()
+        # Cached YOLO models are shared by Streamlit sessions, so inference is
+        # serialized to keep concurrent browser streams reliable.
+        with YOLO_INFERENCE_LOCK:
+            detections, _ = run_detection(image, self.model_name, self.confidence)
 
-    if st.session_state.live_running:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            st.error("Could not access webcam. Check camera permissions or try another device.")
-            st.session_state.live_running = False
-            return
+        detections = self.tracker.update(detections)
+        annotated = draw_detections(image.copy(), detections)
+        counts = object_counts(detections)
+        persons = counts.get("person", 0)
+        density = crowd_density_level(persons)
+        alert = crowd_alert(persons, self.crowd_threshold)
 
-        frame_number = 0
-        start_time = time.time()
-        while st.session_state.live_running and (
-            unlimited_mode or time.time() - start_time < duration_seconds
-        ):
-            ok, frame = cap.read()
-            if not ok:
-                st.warning("Webcam frame could not be read.")
-                break
+        new_detections = []
+        for detection in detections:
+            object_id = detection.get("object_id")
+            if object_id is None or object_id not in self.reported_object_ids:
+                new_detections.append(detection)
+                if object_id is not None:
+                    self.reported_object_ids.add(object_id)
 
-            frame_number += 1
-            detections, _ = run_detection(frame, model_name, confidence)
-            detections = st.session_state.live_tracker.update(detections)
-            annotated = draw_detections(frame.copy(), detections)
-            counts = object_counts(detections)
-            persons = counts.get("person", 0)
-            density = crowd_density_level(persons)
-            alert = crowd_alert(persons, threshold)
-
-            new_detections = filter_new_live_detections(detections)
-            insert_detections(st.session_state.live_session_id, frame_number, new_detections)
+        if new_detections:
+            insert_detections(self.session_id, self.frame_number, new_detections)
+        if self.frame_number == 1 or self.frame_number % 10 == 0:
             insert_crowd_log(
-                st.session_state.live_session_id,
-                frame_number,
+                self.session_id,
+                self.frame_number,
                 persons,
                 counts,
                 different_object_count(detections),
@@ -640,26 +631,96 @@ def live_detection_page() -> None:
                 alert,
             )
 
-            elapsed = time.time() - start_time
-            fps = frame_number / max(elapsed, 0.01)
-            frame_placeholder.image(cv2_to_pil(annotated), caption="Live YOLO Detection", use_column_width=True)
-            metric_cols[0].metric("FPS", f"{fps:.1f}")
-            metric_cols[1].metric("Objects", len(detections))
-            metric_cols[2].metric("Classes", different_object_count(detections))
-            metric_cols[3].metric("Persons", persons)
-            metric_cols[4].metric("Density", density)
-            metric_cols[5].metric("New Report Rows", len(new_detections))
-            css_class = "status-alert" if alert == "Alert" else "status-ok"
-            status_placeholder.markdown(f'<p class="{css_class}">Crowd Status: {alert}</p>', unsafe_allow_html=True)
+        elapsed = max(time.time() - self.started_at, 0.01)
+        with self.state_lock:
+            self.latest_metrics = {
+                "fps": self.frame_number / elapsed,
+                "objects": len(detections),
+                "classes": different_object_count(detections),
+                "persons": persons,
+                "density": density,
+                "alert": alert,
+            }
 
-        cap.release()
-        st.session_state.live_running = False
-        finalize_live_session(st.session_state.live_session_id)
-        st.info("Live detection stopped and reports are ready below.")
-    else:
-        st.info("Click Start Webcam Detection to begin.")
+        status_color = (40, 40, 220) if alert == "Alert" else (20, 170, 90)
+        cv2.rectangle(annotated, (12, 12), (360, 54), (8, 12, 24), -1)
+        cv2.putText(
+            annotated,
+            f"Persons: {persons} | {density} | {alert}",
+            (24, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            status_color,
+            2,
+        )
+        return VideoFrame.from_ndarray(annotated, format="bgr24")
 
-    show_last_live_report_downloads()
+    def get_metrics(self) -> dict:
+        with self.state_lock:
+            return self.latest_metrics.copy()
+
+    def on_ended(self) -> None:
+        end_session(self.session_id)
+
+
+def live_detection_page() -> None:
+    st.title("Live Detection")
+    st.caption("Works on phones, tablets, and computers. Allow camera access when your browser asks.")
+    model_name, confidence = model_controls("live")
+    threshold = st.slider("Crowd Alert Threshold", 1, 50, 15)
+    st.info("Press START below, then choose Allow when the browser requests camera permission.")
+
+    processor_factory = lambda: BrowserYOLOProcessor(model_name, confidence, threshold)
+    context = webrtc_streamer(
+        key="ai-vision-browser-camera",
+        mode=WebRtcMode.SENDRECV,
+        video_processor_factory=processor_factory,
+        rtc_configuration={
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+                {"urls": ["stun:stun1.l.google.com:19302"]},
+            ]
+        },
+        media_stream_constraints={
+            "video": {
+                "facingMode": {"ideal": "environment"},
+                "width": {"ideal": 1280},
+                "height": {"ideal": 720},
+            },
+            "audio": False,
+        },
+        async_processing=True,
+        video_html_attrs={"autoPlay": True, "controls": False, "muted": True},
+    )
+
+    metric_cols = st.columns(6)
+    status_placeholder = st.empty()
+    metrics = {
+        "fps": 0.0,
+        "objects": 0,
+        "classes": 0,
+        "persons": 0,
+        "density": "No Crowd",
+        "alert": "Normal",
+    }
+
+    while context.state.playing:
+        if context.video_processor:
+            metrics = context.video_processor.get_metrics()
+            metric_cols[0].metric("FPS", f"{metrics['fps']:.1f}")
+            metric_cols[1].metric("Objects", metrics["objects"])
+            metric_cols[2].metric("Classes", metrics["classes"])
+            metric_cols[3].metric("Persons", metrics["persons"])
+            metric_cols[4].metric("Density", metrics["density"])
+            metric_cols[5].metric("Status", metrics["alert"])
+            css_class = "status-alert" if metrics["alert"] == "Alert" else "status-ok"
+            status_placeholder.markdown(
+                f'<p class="{css_class}">Crowd Status: {metrics["alert"]}</p>',
+                unsafe_allow_html=True,
+            )
+        time.sleep(0.25)
+
+    st.caption("Use the STOP button in the camera panel to end the session. Results are saved in Detection History.")
 
 
 def filter_new_live_detections(detections: list) -> list:

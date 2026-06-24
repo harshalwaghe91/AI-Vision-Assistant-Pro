@@ -75,7 +75,8 @@ ensure_directories()
 init_db()
 LOGO_PATH = "assets/ai_vision_logo.png"
 YOLO_INFERENCE_LOCK = threading.Lock()
-APP_BUILD = "Stable stop + complete IST v4"
+APP_BUILD = "Native WebRTC stop + complete IST v5"
+LIVE_WEBRTC_KEY = "ai-vision-browser-camera"
 
 
 def apply_css() -> None:
@@ -360,8 +361,6 @@ def apply_css() -> None:
 
 def main() -> None:
     apply_css()
-    if "browser_camera_enabled" not in st.session_state:
-        st.session_state.browser_camera_enabled = False
 
     if Path(LOGO_PATH).exists():
         st.sidebar.image(LOGO_PATH, use_column_width=True)
@@ -379,21 +378,6 @@ def main() -> None:
             "About Project",
         ],
     )
-
-    if page == "Live Detection":
-        st.sidebar.markdown("---")
-        if st.session_state.browser_camera_enabled:
-            st.sidebar.success("Live camera is active")
-        else:
-            st.sidebar.info("Live camera is stopped")
-        if st.sidebar.button(
-            "Stop Live Camera",
-            type="primary",
-            use_container_width=True,
-            key="sidebar_stop_live_camera",
-        ):
-            request_live_camera_stop()
-            st.rerun()
 
     st.sidebar.markdown("---")
     st.sidebar.caption("YOLO + OpenCV + Streamlit + SQLite")
@@ -683,15 +667,29 @@ class BrowserYOLOProcessor(VideoProcessorBase):
         pass
 
 
-def request_live_camera_stop() -> None:
-    """Stop WebRTC and queue its current session for report generation."""
-    session_id = (
-        st.session_state.get("browser_live_session_id")
-        or fetch_latest_open_session_id("Browser Live Detection")
-    )
-    st.session_state.browser_camera_enabled = False
-    if session_id:
-        st.session_state.pending_live_report_session_id = session_id
+def handle_live_camera_change() -> None:
+    """Create/finalize sessions from the WebRTC component's real state."""
+    context = st.session_state.get(LIVE_WEBRTC_KEY)
+    if context is None:
+        return
+
+    is_playing = bool(context.state.playing)
+    was_playing = bool(st.session_state.get("browser_live_was_playing", False))
+
+    if is_playing and not was_playing:
+        session_id = create_session_id("browser_live")
+        st.session_state.browser_live_session_id = session_id
+        st.session_state.last_live_report_paths = {}
+        create_session(session_id, "Browser Live Detection")
+    elif was_playing and not is_playing:
+        session_id = (
+            st.session_state.get("browser_live_session_id")
+            or fetch_latest_open_session_id("Browser Live Detection")
+        )
+        if session_id:
+            st.session_state.pending_live_report_session_id = session_id
+
+    st.session_state.browser_live_was_playing = is_playing
 
 
 def live_detection_page() -> None:
@@ -699,38 +697,16 @@ def live_detection_page() -> None:
     st.caption("Works on phones, tablets, and computers. Allow camera access when your browser asks.")
     model_name, confidence = model_controls("live")
     threshold = st.slider("Crowd Alert Threshold", 1, 50, 15)
-
-    start_col, stop_col = st.columns(2)
-    if start_col.button(
-        "Start Camera",
-        type="primary",
-        use_container_width=True,
-        disabled=st.session_state.browser_camera_enabled,
-    ):
-        session_id = create_session_id("browser_live")
-        st.session_state.browser_live_session_id = session_id
-        st.session_state.last_live_report_paths = {}
-        create_session(session_id, "Browser Live Detection")
-        st.session_state.browser_camera_enabled = True
-        st.rerun()
-    if stop_col.button(
-        "Stop Camera",
-        use_container_width=True,
-    ):
-        request_live_camera_stop()
-        st.rerun()
-
-    if st.session_state.browser_camera_enabled:
-        st.success("Camera is active. Detection details appear on the video.")
-    else:
-        st.info("Press Start Camera, then choose Allow when the browser requests camera permission.")
+    st.info(
+        "Use the camera control directly below the video. It changes from "
+        "Start Live Detection to Stop Live Detection while the camera is active."
+    )
 
     session_id = st.session_state.get("browser_live_session_id")
     processor_factory = lambda: BrowserYOLOProcessor(model_name, confidence, threshold, session_id)
     context = webrtc_streamer(
-        key="ai-vision-browser-camera",
+        key=LIVE_WEBRTC_KEY,
         mode=WebRtcMode.SENDRECV,
-        desired_playing_state=st.session_state.browser_camera_enabled,
         video_processor_factory=processor_factory,
         rtc_configuration={
             "iceServers": [
@@ -748,37 +724,26 @@ def live_detection_page() -> None:
         },
         async_processing=True,
         video_html_attrs={"autoPlay": True, "controls": False, "muted": True},
+        translations={
+            "start": "Start Live Detection",
+            "stop": "Stop Live Detection",
+            "select_device": "Select Camera",
+        },
+        on_change=handle_live_camera_change,
     )
 
     pending_session_id = st.session_state.pop("pending_live_report_session_id", None)
-    if pending_session_id and not st.session_state.browser_camera_enabled:
+    if pending_session_id and not context.state.playing:
         time.sleep(0.3)
         with st.spinner("Finalizing live detection reports..."):
             finalize_live_session(pending_session_id)
         st.session_state.browser_live_session_id = None
         st.success("Live detection stopped. CSV, Excel, and PDF reports are ready below.")
 
-    if context.video_processor:
-        metrics = context.video_processor.get_metrics()
-        metric_cols = st.columns(6)
-        metric_cols[0].metric("FPS", f"{metrics['fps']:.1f}")
-        metric_cols[1].metric("Objects", metrics["objects"])
-        metric_cols[2].metric("Classes", metrics["classes"])
-        metric_cols[3].metric("Persons", metrics["persons"])
-        metric_cols[4].metric("Density", metrics["density"])
-        metric_cols[5].metric("Status", metrics["alert"])
-
-    if st.session_state.browser_camera_enabled:
-        st.warning("To stop detection, use Stop Camera above or Stop Live Camera in the sidebar.")
-        if st.button(
-            "Stop Detection Now",
-            use_container_width=True,
-            key="bottom_stop_live_camera",
-        ):
-            request_live_camera_stop()
-            st.rerun()
+    if context.state.playing:
+        st.success("Live detection is active. Counts and crowd status appear on the video.")
     else:
-        st.caption("Results are saved in Detection History.")
+        st.caption("Start a new camera session above. Completed sessions are saved in Detection History.")
 
     show_last_live_report_downloads()
 

@@ -668,12 +668,37 @@ def live_detection_page() -> None:
     st.caption("Works on phones, tablets, and computers. Allow camera access when your browser asks.")
     model_name, confidence = model_controls("live")
     threshold = st.slider("Crowd Alert Threshold", 1, 50, 15)
-    st.info("Press START below, then choose Allow when the browser requests camera permission.")
+
+    if "browser_camera_enabled" not in st.session_state:
+        st.session_state.browser_camera_enabled = False
+
+    start_col, stop_col = st.columns(2)
+    if start_col.button(
+        "Start Camera",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state.browser_camera_enabled,
+    ):
+        st.session_state.browser_camera_enabled = True
+        st.rerun()
+    if stop_col.button(
+        "Stop Camera",
+        use_container_width=True,
+        disabled=not st.session_state.browser_camera_enabled,
+    ):
+        st.session_state.browser_camera_enabled = False
+        st.rerun()
+
+    if st.session_state.browser_camera_enabled:
+        st.success("Camera is active. Detection details appear on the video.")
+    else:
+        st.info("Press Start Camera, then choose Allow when the browser requests camera permission.")
 
     processor_factory = lambda: BrowserYOLOProcessor(model_name, confidence, threshold)
     context = webrtc_streamer(
         key="ai-vision-browser-camera",
         mode=WebRtcMode.SENDRECV,
+        desired_playing_state=st.session_state.browser_camera_enabled,
         video_processor_factory=processor_factory,
         rtc_configuration={
             "iceServers": [
@@ -693,34 +718,17 @@ def live_detection_page() -> None:
         video_html_attrs={"autoPlay": True, "controls": False, "muted": True},
     )
 
-    metric_cols = st.columns(6)
-    status_placeholder = st.empty()
-    metrics = {
-        "fps": 0.0,
-        "objects": 0,
-        "classes": 0,
-        "persons": 0,
-        "density": "No Crowd",
-        "alert": "Normal",
-    }
+    if context.video_processor:
+        metrics = context.video_processor.get_metrics()
+        metric_cols = st.columns(6)
+        metric_cols[0].metric("FPS", f"{metrics['fps']:.1f}")
+        metric_cols[1].metric("Objects", metrics["objects"])
+        metric_cols[2].metric("Classes", metrics["classes"])
+        metric_cols[3].metric("Persons", metrics["persons"])
+        metric_cols[4].metric("Density", metrics["density"])
+        metric_cols[5].metric("Status", metrics["alert"])
 
-    while context.state.playing:
-        if context.video_processor:
-            metrics = context.video_processor.get_metrics()
-            metric_cols[0].metric("FPS", f"{metrics['fps']:.1f}")
-            metric_cols[1].metric("Objects", metrics["objects"])
-            metric_cols[2].metric("Classes", metrics["classes"])
-            metric_cols[3].metric("Persons", metrics["persons"])
-            metric_cols[4].metric("Density", metrics["density"])
-            metric_cols[5].metric("Status", metrics["alert"])
-            css_class = "status-alert" if metrics["alert"] == "Alert" else "status-ok"
-            status_placeholder.markdown(
-                f'<p class="{css_class}">Crowd Status: {metrics["alert"]}</p>',
-                unsafe_allow_html=True,
-            )
-        time.sleep(0.25)
-
-    st.caption("Use the STOP button in the camera panel to end the session. Results are saved in Detection History.")
+    st.caption("Use Stop Camera above to end detection. Results are saved in Detection History.")
 
 
 def filter_new_live_detections(detections: list) -> list:

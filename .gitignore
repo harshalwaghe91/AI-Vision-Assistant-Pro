@@ -1,0 +1,31 @@
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local Streamlit secrets
+.streamlit/secrets.toml
+
+# Runtime logs
+*.log
+
+# Generated application data
+database/*.db
+database/*.sqlite
+database/*.sqlite3
+database/ultralytics/
+outputs/*
+reports/*
+
+# Keep output folders available after cloning
+!outputs/.gitkeep
+!reports/.gitkeep
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
